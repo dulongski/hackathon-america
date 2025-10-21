@@ -12,5 +12,3 @@ Este demo crea un dashboard en Streamlit donde puedes:
 pip install -r requirements.txt
 streamlit run app.py
 ```
-
-Los datos son **dummy** y se generan en memoria.
