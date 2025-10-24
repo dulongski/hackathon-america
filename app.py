@@ -175,22 +175,43 @@ with tab1:
     events_min = load_parquet(FILES["events_min"])
     rw_profiles = load_parquet(FILES["rw_profiles"])
 
-        # === Age & Country helpers (after loading players_meta) ===
+    # === Age & Country helpers (after loading players_meta) ===
     from datetime import date
 
     COUNTRY_TO_ALPHA2 = {
-        "Mexico":"MX","Argentina":"AR","Brazil":"BR","Uruguay":"UY","Paraguay":"PY",
-        "Chile":"CL","Colombia":"CO","Ecuador":"EC","Peru":"PE","United States":"US",
-        "Spain":"ES","France":"FR","Portugal":"PT","Italy":"IT","Germany":"DE",
-        "Netherlands":"NL","Belgium":"BE","Poland":"PL","Denmark":"DK","Sweden":"SE",
-        "Norway":"NO","Finland":"FI","Japan":"JP","Korea Republic":"KR","Canada":"CA",
-        "England":"GB","Scotland":"GB","Wales":"GB","Northern Ireland":"GB",
-        "Croatia":"HR","Serbia":"RS","Bosnia and Herzegovina":"BA","Slovenia":"SI",
-        "Czech Republic":"CZ","Slovakia":"SK","Switzerland":"CH","Austria":"AT",
-        "Greece":"GR","Turkey":"TR","Morocco":"MA","Algeria":"DZ","Tunisia":"TN",
-        "Nigeria":"NG","Ghana":"GH","Cameroon":"CM","Ivory Coast":"CI","Senegal":"SN",
-        "Costa Rica":"CR","Honduras":"HN","Guatemala":"GT","El Salvador":"SV",
-        "Panama":"PA","Venezuela":"VE","Bolivia":"BO","Armenia":"AM","Georgia":"GE",
+        "Mexico": "MX",
+        "France": "FR",
+        "Netherlands": "NL",
+        "Colombia": "CO",
+        "Venezuela": "VE",
+        "Brazil": "BR",
+        "Argentina": "AR",
+        "Italy": "IT",
+        "Spain": "ES",
+        "Peru": "PE",
+        "Costa Rica": "CR",
+        "Panama": "PA",
+        "Uruguay": "UY",
+        "Ecuador": "EC",
+        "Honduras": "HN",
+        "Morocco": "MA",
+        "Paraguay": "PY",
+        "Cape Verde": "CV",
+        "USA": "US",
+        "Greece": "GR",
+        "Portugal": "PT",
+        "Chile": "CL",
+        "Montenegro": "ME",
+        "Cameroon": "CM",
+        "Canada": "CA",
+        "Côte d'Ivoire": "CI",
+        "Ghana": "GH",
+        "Guatemala": "GT",
+        "Germany": "DE",
+        "Jamaica": "JM",
+        "Poland": "PL",
+        "Slovenia": "SI",
+        "Nigeria": "NG",
     }
 
     def country_flag(country: str) -> str:
@@ -199,7 +220,6 @@ with tab1:
         code = COUNTRY_TO_ALPHA2.get(country.strip(), None)
         if not code:
             return "🏳️"
-        # regional indicator letters
         return "".join(chr(127397 + ord(c)) for c in code.upper())
 
     def compute_age_from_birthdate(s: pd.Series, ref: date = date.today()) -> pd.Series:
@@ -224,7 +244,6 @@ with tab1:
         axis=1
     )
 
-
     # ---- Network Effects artifacts (optional; soft-load) ----
     try:
         rw_profiles = pd.read_parquet(ARTIFACTS_DIR / "rw_per90_team_agnostic.parquet")
@@ -241,7 +260,6 @@ with tab1:
         NETWORK_ARTIFACTS_OK = True
     except Exception:
         NETWORK_ARTIFACTS_OK = False
-
 
     # =========================
     # Helpers (XI + model)
@@ -279,7 +297,6 @@ with tab1:
                         .groupby(["player_id","player"], as_index=False)["tmin"]
                         .min().sort_values("tmin").head(11))
         return first_seen["player_id"].astype(int).tolist(), match_id
-
 
     def vectorize_lineup(player_ids, feature_names, mapping, role_lookup, is_home=1):
         # Dedup & ints
@@ -324,18 +341,34 @@ with tab1:
         return xg_for_hat, xg_against_hat, xg_for_hat - xg_against_hat
 
     def delta_swap_components(current, out_pid, in_pid, rapm_for, rapm_against,
-                            feature_names, mapping, role_lookup, is_home=1):
+                              feature_names, mapping, role_lookup, is_home=1):
+        """
+        Returns (delta_xg_for, delta_xg_against, delta_deltaxg) where:
+        delta_xg_for     = tanh((after_for - before_for))
+        delta_xg_against = tanh((after_against - before_against))
+        delta_deltaxg    = delta_xg_for - delta_xg_against
+        """
         try:
             out_pid = int(out_pid); in_pid = int(in_pid)
         except Exception:
             return np.nan, np.nan, np.nan
         if out_pid == in_pid:
             return 0.0, 0.0, 0.0
-        before_f, before_a, _ = score_lineup_components(current, rapm_for, rapm_against, feature_names, mapping, role_lookup, is_home)
-        new_lineup = [pid for pid in current if int(pid) != out_pid] + [in_pid]
-        after_f, after_a, _ = score_lineup_components(new_lineup, rapm_for, rapm_against, feature_names, mapping, role_lookup, is_home)
-        return after_f - before_f, after_a - before_a, (after_f - after_a) - (before_f - before_a)
 
+        before_f, before_a, _ = score_lineup_components(
+            current, rapm_for, rapm_against, feature_names, mapping, role_lookup, is_home
+        )
+        new_lineup = [pid for pid in current if int(pid) != out_pid] + [in_pid]
+        after_f, after_a, _ = score_lineup_components(
+            new_lineup, rapm_for, rapm_against, feature_names, mapping, role_lookup, is_home
+        )
+
+        dF_raw = after_f - before_f
+        dA_raw = after_a - before_a
+        dF = float(np.tanh(dF_raw))
+        dA = float(np.tanh(dA_raw))
+        dD = dF - dA
+        return dF, dA, dD
 
     # =========================
     # Utilities for colors and names
@@ -351,7 +384,6 @@ with tab1:
             team = get_latest_team(pid)
             return TEAM_COLORS.get(team, "#888888")
         return TEAM_COLORS.get(base_team, "#1f77b4")
-
 
     # =========================
     # Pitch helpers (axis-swapped vertical)
@@ -386,12 +418,6 @@ with tab1:
         return entries
 
     def pitch_label_name(full_name: str) -> str:
-        """
-        Pitch labels:
-        - 4+ words  -> first initial + 3rd word
-        - 2–3 words -> first initial + 2nd word
-        - 1 word    -> the word itself
-        """
         if not isinstance(full_name, str):
             return ""
         parts = [p for p in full_name.strip().split() if p]
@@ -406,67 +432,50 @@ with tab1:
             return parts[0]
 
     def draw_pitch_with_xi(xi: list[int], base_team: str,
-                        players_meta: pd.DataFrame, clusters_df: pd.DataFrame,
-                        baseline_xi: list[int]):
-        """Vertical StatsBomb pitch with axis swap: GK bottom, CF top.
-        Swapped-in players (not in baseline) are colored by their latest team."""
+                           players_meta: pd.DataFrame, clusters_df: pd.DataFrame,
+                           baseline_xi: list[int]):
         if not MPLSOCCER_OK:
             st.info("Install `mplsoccer` to render the pitch:  pip install mplsoccer")
             return
 
         baseline_set = set(int(p) for p in baseline_xi)
-
-        # Build entries and per-player colors
         entries = coords_for_xi(xi, players_meta, clusters_df)
         colors = [color_for_player(e["player_id"], base_team, baseline_set) for e in entries]
 
-        # Draw pitch
         pitch = VerticalPitch(pitch_type='statsbomb', half=False,
-                            pad_bottom=2, pad_top=2, pad_left=2, pad_right=2)
+                              pad_bottom=2, pad_top=2, pad_left=2, pad_right=2)
         fig, ax = pitch.draw(figsize=(6.6, 10))
 
-        # StatsBomb dims: width=80 (x), length=120 (y)
-        xs = [80 - e["x"] for e in entries]  # horizontal flip to put RB on viewer's right
+        xs = [80 - e["x"] for e in entries]
         ys = [e["y"] for e in entries]
 
-        # Axis swap: plot (y, x)
         pitch.scatter(ys, xs, s=290, c=colors, edgecolors='black', linewidth=1.1, ax=ax, zorder=3)
         for e, x, y in zip(entries, ys, xs):
             name_short = pitch_label_name(e["name"])
             pitch.annotate(f"{name_short} (id {e['player_id']})", (x-5, y),
-                        ax=ax, ha='center', fontsize=9, zorder=4)
+                           ax=ax, ha='center', fontsize=9, zorder=4)
             pitch.annotate(e["pos"], (x-8, y),
-                        ax=ax, ha='center', fontsize=7, color="#444", zorder=4)
+                           ax=ax, ha='center', fontsize=7, color="#444", zorder=4)
 
         st.pyplot(fig)
 
-
     # =========================
-    # Position normalization (so filters actually work)
+    # Position normalization
     # =========================
     _POS_MAP = {
         "GK": "Goalkeeper", "GOALKEEPER": "Goalkeeper",
-
         "RB": "Right Back", "RWB": "Right Back", "RIGHT BACK": "Right Back",
-
         "CB": "Center Back", "RCB": "Center Back", "LCB": "Center Back",
         "CENTER BACK": "Center Back", "CENTRE BACK": "Center Back",
-
         "LB": "Left Back", "LWB": "Left Back", "LEFT BACK": "Left Back",
-
         "CDM": "Defensive Midfield", "DM": "Defensive Midfield",
         "DEFENSIVE MIDFIELD": "Defensive Midfield",
-
         "CM": "Center Midfield", "MC": "Center Midfield",
         "CENTER MIDFIELD": "Center Midfield", "CENTRE MIDFIELD": "Center Midfield",
-
         "CAM": "Attacking Midfield", "AM": "Attacking Midfield",
         "ATTACKING MIDFIELD": "Attacking Midfield",
-
         "RW": "Right Wing", "RM": "Right Wing", "RIGHT WING": "Right Wing",
-
         "LW": "Left Wing", "LM": "Left Wing", "LEFT WING": "Left Wing",
-
         "CF": "Center Forward", "ST": "Center Forward", "FW": "Center Forward",
         "STRIKER": "Center Forward", "CENTER FORWARD": "Center Forward",
         "CENTRE FORWARD": "Center Forward",
@@ -482,9 +491,8 @@ with tab1:
             return s
         return _POS_MAP.get(s.upper(), None)
 
-
     # =========================
-    # Sidebar (team dropdown with color, alpha-sorted; auto-reset baseline/current)
+    # Sidebar (team & filters)
     # =========================
     _sorted = sorted(LIGA_MX_TEAMS)
     team_labels = [f"{TEAM_BADGE.get(t, '⚪')}  {t}" for t in _sorted]
@@ -492,28 +500,17 @@ with tab1:
 
     with st.sidebar:
         st.header("Team & Filters (only for Lineup tool)")
-
-        # Baseline team
         default_idx = _sorted.index("América")
         sel_label = st.selectbox("Baseline team (latest XI):", options=team_labels, index=default_idx)
         base_team = label_to_team[sel_label]
 
-        # Global team filter
         latest_team_filter = ["(All)"] + _sorted
         sel_team = st.selectbox("Filter candidate pool by latest team:", latest_team_filter, index=0)
 
-        # Positions (multi)
-        sel_positions = st.multiselect(
-            "Filter candidate pool by positions:",
-            options=GROUPED_POSITIONS,
-            default=[]
-        )
-
-        # Only main position?
+        sel_positions = st.multiselect("Filter candidate pool by positions:", options=GROUPED_POSITIONS, default=[])
         only_main_pos = st.checkbox("Only main position equals filter", value=False)
 
         st.markdown("#### Demographics")
-        # Age slider bounds (ignore NaN)
         _ages = players_meta["age"].dropna().astype(int)
         if _ages.empty:
             age_min, age_max = 15, 45
@@ -522,10 +519,8 @@ with tab1:
         sel_age = st.slider("Age range:", min_value=age_min, max_value=age_max,
                             value=(age_min, age_max), step=1)
 
-        # Country multiselect with emoji flag labels (A→Z)
         _countries = (players_meta[["country","country_flag"]]
-                        .dropna()
-                        .drop_duplicates()
+                        .dropna().drop_duplicates()
                         .assign(label=lambda d: d["country_flag"] + " " + d["country"])
                         .sort_values("country", kind="stable"))
         country_labels = _countries["label"].tolist()
@@ -533,38 +528,27 @@ with tab1:
         sel_countries_lbl = st.multiselect("Countries:", options=country_labels, default=country_labels)
         sel_countries = {label_to_country[lbl] for lbl in sel_countries_lbl}
 
-                # Merge demographics and filter by age & country
-
-        # ---- PREVIEW POOL to build cluster options coherently ----
+        # ---- PREVIEW POOL ----
         _preview_cands = (
             players_meta[["player_id","player","latest_team","primary_pos","secondary_pos","third_pos"]]
             .merge(
                 clusters_df[["player_id","primary_grouped_pos","pos_cluster_id",
-                            "pos_cluster_label","pos_cluster_name"]],
+                             "pos_cluster_label","pos_cluster_name"]],
                 on="player_id", how="left"
             )
-        )
-        _preview_cands = _preview_cands.merge(
+        ).merge(
             players_meta[["player_id","age","country","country_flag","country_label"]],
             on="player_id", how="left"
         )
-        _preview_cands = _preview_cands[
-            _preview_cands["age"].between(sel_age[0], sel_age[1], inclusive="both", na=False)
-            & (_preview_cands["country"].isin(sel_countries))
-        ]
-
-        # normalized grouped versions of pos fields
+        _age_mask_prev = _preview_cands["age"].between(sel_age[0], sel_age[1], inclusive="both").fillna(False)
+        _preview_cands = _preview_cands[_age_mask_prev & _preview_cands["country"].isin(sel_countries)]
         _preview_cands["primary_pos_grouped_norm"]   = _preview_cands["primary_pos"].map(_to_grouped)
         _preview_cands["secondary_pos_grouped_norm"] = _preview_cands["secondary_pos"].map(_to_grouped)
         _preview_cands["third_pos_grouped_norm"]     = _preview_cands["third_pos"].map(_to_grouped)
 
-        
-
-        # team filter
         if sel_team != "(All)":
             _preview_cands = _preview_cands[_preview_cands["latest_team"] == sel_team]
 
-        # positions filter
         if sel_positions:
             if only_main_pos:
                 mask_pos_prev = _preview_cands["primary_grouped_pos"].isin(sel_positions)
@@ -577,7 +561,6 @@ with tab1:
                 )
             _preview_cands = _preview_cands[mask_pos_prev]
 
-        # cluster column resolution
         cluster_col_preview = "pos_cluster_name" if (
             "pos_cluster_name" in _preview_cands.columns and _preview_cands["pos_cluster_name"].notna().any()
         ) else "pos_cluster_label"
@@ -594,16 +577,13 @@ with tab1:
         )
 
         allow_cross_pos = st.checkbox("Allow cross-position replacements", value=False)
-                # === NEW: Age & Country filters (Lineup tab only) ===
-
 
         st.markdown("---")
         is_home = st.selectbox("Match context", options=["Home","Away"], index=0)
         is_home_flag = 1 if is_home == "Home" else 0
 
-
     # =========================
-    # App state: authoritative XI + baseline (+ queued edit-box sync)
+    # App state
     # =========================
     def reset_to_team_latest(team_name: str):
         try:
@@ -614,7 +594,6 @@ with tab1:
         st.session_state["xi_baseline"] = list(xi_latest)
         st.session_state["_xi_text_pending"] = ",".join(map(str, xi_latest))
 
-    # Initialize or update when team changes
     if "xi_current" not in st.session_state or "xi_baseline" not in st.session_state:
         reset_to_team_latest(base_team)
     else:
@@ -637,14 +616,11 @@ with tab1:
         return out
 
     def _on_xi_text_change():
-        # Only updates the active XI (not baseline)
         st.session_state["xi_current"] = _parse_xi_text_to_list(st.session_state["xi_text"])
 
-    # Apply any queued xi_text sync BEFORE rendering the input
     if "_xi_text_pending" in st.session_state:
         st.session_state["xi_text"] = st.session_state.pop("_xi_text_pending")
 
-    # Baseline XI text input (drives xi_current via callback)
     xi_text_default = st.session_state.get("xi_text", ",".join(map(str, st.session_state["xi_current"])))
     st.text_input(
         "Edit XI (comma-separated player_ids) — edits active lineup only",
@@ -662,25 +638,18 @@ with tab1:
         return sorted([c for c in df.columns if c.endswith("_per90_rw")])
 
     def _merge_roster_for_compare(rw_profiles: pd.DataFrame,
-                                players_meta: pd.DataFrame,
-                                clusters_df: pd.DataFrame) -> pd.DataFrame:
+                                  players_meta: pd.DataFrame,
+                                  clusters_df: pd.DataFrame) -> pd.DataFrame:
         cols_keep = ["player_id","player"] + _detect_per90_rw_cols(rw_profiles)
         left = rw_profiles[cols_keep].copy()
-
-        meta = players_meta[["player_id","player","latest_team",
-                            "primary_pos","secondary_pos","third_pos"]]
+        meta = players_meta[["player_id","player","latest_team","primary_pos","secondary_pos","third_pos"]]
         clu  = clusters_df[["player_id","primary_grouped_pos","pos_cluster_id","pos_cluster_name"]]
-
         out = (left.merge(meta, on=["player_id","player"], how="left")
-                .merge(clu, on="player_id", how="left"))
-        # drop players without grouped primary position (insufficient apps)
+                    .merge(clu, on="player_id", how="left"))
         out = out.dropna(subset=["primary_grouped_pos"]).reset_index(drop=True)
         return out
 
-    def _apply_compare_filters(pool: pd.DataFrame,
-                            team: str | None,
-                            pos: str | None,
-                            cluster_name: str | None) -> pd.DataFrame:
+    def _apply_compare_filters(pool: pd.DataFrame, team: str | None, pos: str | None, cluster_name: str | None) -> pd.DataFrame:
         df = pool.dropna(subset=["primary_grouped_pos"]).copy()
         if team and team != "(All)":
             df = df[df["latest_team"] == team]
@@ -696,23 +665,18 @@ with tab1:
             df = df[df["pos_cluster_name"] == cluster_name]
         return df.sort_values("player").reset_index(drop=True)
 
-
     def _percentiles_within_pos(df: pd.DataFrame, pos: str, stat_cols: list[str]) -> pd.DataFrame:
-        # compute percentiles per stat within peers of the same grouped position
         peers = df[df["primary_grouped_pos"] == pos].copy()
         out = df[["player_id","player","primary_grouped_pos"]].copy()
         for c in stat_cols:
             x = peers[c].astype(float)
-            # rank pct robust to ties/NaN
             ranks = x.rank(pct=True, method="average")
-            # map back to full df by player_id
             map_pct = peers[["player_id"]].assign(pct=ranks.fillna(0.0))
             out = out.merge(map_pct, on="player_id", how="left", suffixes=("",""))
             out = out.rename(columns={"pct": c.replace("_per90_rw","_pct")})
         return out
-    
+
     def hex_to_rgba(c: str, alpha: float = 0.35) -> str:
-        """'#RRGGBB' -> 'rgba(r,g,b,a)'. Falls back to the input if it's already rgb/rgba."""
         if not isinstance(c, str):
             return f"rgba(31,119,180,{alpha})"
         s = c.strip().lower()
@@ -721,85 +685,58 @@ with tab1:
         if s.startswith("#"):
             s = s[1:]
             if len(s) == 3:
-                s = "".join(ch*2 for ch in s)  # #abc -> #aabbcc
+                s = "".join(ch*2 for ch in s)
             if len(s) >= 6:
                 r = int(s[0:2], 16); g = int(s[2:4], 16); b = int(s[4:6], 16)
                 return f"rgba({r},{g},{b},{alpha})"
-        # default fallback
         return f"rgba(31,119,180,{alpha})"
 
-
-    def _radar_for_players(df: pd.DataFrame,
-                        pA_id: int, pB_id: int,
-                        stat_cols: list[str],
-                        title: str = "Radar (position-relative percentiles)"):
+    def _radar_for_players(df: pd.DataFrame, pA_id: int, pB_id: int, stat_cols: list[str],
+                           title: str = "Radar (position-relative percentiles)"):
         pA = df[df["player_id"] == pA_id].iloc[0]
         pB = df[df["player_id"] == pB_id].iloc[0]
         posA = str(pA.get("primary_grouped_pos", "Center Midfield")) or "Center Midfield"
         posB = str(pB.get("primary_grouped_pos", "Center Midfield")) or "Center Midfield"
-
-        # percentiles within each player's position
         pctA = _percentiles_within_pos(df, posA, stat_cols)
         pctB = _percentiles_within_pos(df, posB, stat_cols)
         rowA = pctA[pctA["player_id"] == pA_id].iloc[0]
         rowB = pctB[pctB["player_id"] == pB_id].iloc[0]
-
         cats = [c.replace("_per90_rw","") for c in stat_cols]
         valsA = [100.0 * float(rowA[c.replace("_per90_rw","_pct")]) for c in stat_cols]
         valsB = [100.0 * float(rowB[c.replace("_per90_rw","_pct")]) for c in stat_cols]
-
         cats_loop = cats + [cats[0]]
         valsA_loop = valsA + [valsA[0]]
         valsB_loop = valsB + [valsB[0]]
-
-        # Colors by latest team
         teamA = str(pA.get("latest_team", "")) if pd.notna(pA.get("latest_team")) else ""
         teamB = str(pB.get("latest_team", "")) if pd.notna(pB.get("latest_team")) else ""
         colA = TEAM_COLORS.get(teamA, "#1f77b4")
         colB = TEAM_COLORS.get(teamB, "#ff7f0e")
-
         fig = go.Figure()
-        fig.add_trace(go.Scatterpolar(
-            r=valsA_loop, theta=cats_loop, fill='toself',
-            name=f"{pA['player']} ({posA})",
-            fillcolor=hex_to_rgba(colA, 0.35),   # <-- use rgba fill
-            line=dict(color=colA, width=3)
-        ))
-        fig.add_trace(go.Scatterpolar(
-            r=valsB_loop, theta=cats_loop, fill='toself',
-            name=f"{pB['player']} ({posB})",
-            fillcolor=hex_to_rgba(colB, 0.35),   # <-- use rgba fill
-            line=dict(color=colB, width=3)
-        ))
-        fig.update_layout(
-            title=title,
-            polar=dict(radialaxis=dict(range=[0,100], tickvals=[0,25,50,75,100])),
-            showlegend=True, margin=dict(l=20,r=20,t=50,b=20), height=520,
-        )
+        fig.add_trace(go.Scatterpolar(r=valsA_loop, theta=cats_loop, fill='toself',
+                                      name=f"{pA['player']} ({posA})",
+                                      fillcolor=hex_to_rgba(colA, 0.35),
+                                      line=dict(color=colA, width=3)))
+        fig.add_trace(go.Scatterpolar(r=valsB_loop, theta=cats_loop, fill='toself',
+                                      name=f"{pB['player']} ({posB})",
+                                      fillcolor=hex_to_rgba(colB, 0.35),
+                                      line=dict(color=colB, width=3)))
+        fig.update_layout(title=title, polar=dict(radialaxis=dict(range=[0,100], tickvals=[0,25,50,75,100])),
+                          showlegend=True, margin=dict(l=20,r=20,t=50,b=20), height=520)
         return fig
-
-
 
     def _percentile_bar(df: pd.DataFrame, pid: int, stat_cols: list[str], title: str):
         import math
-
         row = df[df["player_id"] == pid]
         if row.empty:
-            return go.Figure()  # nothing to plot
-
+            return go.Figure()
         row = row.iloc[0]
         pos = str(row.get("primary_grouped_pos", "Center Midfield")) if pd.notna(row.get("primary_grouped_pos")) else "Center Midfield"
-
-        # Percentiles within the player's grouped position
         pct = _percentiles_within_pos(df, pos, stat_cols)
         prow = pct[pct["player_id"] == pid]
         if prow.empty:
             return go.Figure()
-
         prow = prow.iloc[0]
         cats = [c.replace("_per90_rw","") for c in stat_cols]
-
-        # Build values safely (NaN -> 0)
         vals = []
         for c in stat_cols:
             v = prow.get(c.replace("_per90_rw","_pct"), np.nan)
@@ -810,38 +747,17 @@ with tab1:
             except Exception:
                 v = 0.0
             vals.append(100.0 * v)
-
-        # Color ramp: red→green; if value was NaN (now 0), draw gray
         colors = []
         for v in vals:
-            # if v came from NaN originally you'd likely want neutral — detect by very small abs
-            if not math.isfinite(v):
-                colors.append("rgba(160,160,160,0.85)")
-            else:
-                # clamp
-                vv = max(0.0, min(100.0, v))
-                r = int(255 * (1.0 - vv/100.0))
-                g = int(255 * (vv/100.0))
-                colors.append(f"rgba({r},{g},0,0.85)")
-
-        fig = go.Figure(go.Bar(
-            x=cats, y=vals,
-            marker=dict(color=colors),
-            text=[f"{v:.0f}" for v in vals],
-            textposition="outside",
-            cliponaxis=False,
-        ))
-        fig.update_layout(
-            title=title,
-            yaxis=dict(range=[0, 100]),
-            height=340,
-            margin=dict(l=20,r=20,t=40,b=20),
-            bargap=0.35,
-        )
+            vv = max(0.0, min(100.0, v))
+            r = int(255 * (1.0 - vv/100.0))
+            g = int(255 * (vv/100.0))
+            colors.append(f"rgba({r},{g},0,0.85)")
+        fig = go.Figure(go.Bar(x=cats, y=vals, marker=dict(color=colors),
+                               text=[f"{v:.0f}" for v in vals], textposition="outside", cliponaxis=False))
+        fig.update_layout(title=title, yaxis=dict(range=[0, 100]), height=340,
+                          margin=dict(l=20,r=20,t=40,b=20), bargap=0.35)
         return fig
-
-
-
 
     # =========================
     # Swap pairing & baseline deltas (for chart)
@@ -854,7 +770,6 @@ with tab1:
         return "Center Midfield"
 
     def pair_swaps_vs_baseline(baseline: list[int], current: list[int]) -> list[tuple[int,int]]:
-        """Pair added players with removed players, preferring same grouped position."""
         bset, cset = set(baseline), set(current)
         removed = [p for p in baseline if p not in cset]
         added   = [p for p in current  if p not in bset]
@@ -877,7 +792,7 @@ with tab1:
         return pairs
 
     def baseline_deltas(baseline_xi: list[int], current_xi: list[int]):
-        """Compute deltas (For, Against, Delta) for each (out,in) swap vs baseline."""
+        """Each swap's DF, DA, DD with tanh-applied DF/DA before DD."""
         pairs = pair_swaps_vs_baseline(baseline_xi, current_xi)
         rows = []
         for out_pid, in_pid in pairs:
@@ -901,7 +816,6 @@ with tab1:
             })
         return pd.DataFrame(rows)
 
-
     # =========================
     # XI list + Pitch + Inline swap (with rankings)
     # =========================
@@ -919,14 +833,13 @@ with tab1:
 
     st.markdown("### Starting XI")
 
-    # Build ordered XI table
     xi_df = pd.DataFrame({"player_id": xi}).merge(
         players_meta[["player_id","player","latest_team","primary_pos","secondary_pos","third_pos"]],
         on="player_id", how="left"
+    ).merge(
+        clusters_df[["player_id","primary_grouped_pos"]], on="player_id", how="left"
     )
-    xi_df = xi_df.merge(clusters_df[["player_id","primary_grouped_pos"]], on="player_id", how="left")
     xi_df["main_pos"] = xi_df["primary_pos"].fillna(xi_df["primary_grouped_pos"])
-
     pos_order = {p:i for i,p in enumerate(GROUPED_POSITIONS)}
     xi_df["pos_rank"] = xi_df["main_pos"].map(pos_order).fillna(99)
     xi_df = xi_df.sort_values(["pos_rank","player"]).reset_index(drop=True)
@@ -937,16 +850,17 @@ with tab1:
         draw_pitch_with_xi(xi, base_team, players_meta, clusters_df, baseline_xi=list(st.session_state["xi_baseline"]))
 
     with col_list:
-        # ======= BIG centered current vs baseline deltas banner =======
+        # ======= BIG centered current vs baseline deltas banner (tanh on deltas) =======
         baseF, baseA, baseD = score_lineup_components(
             st.session_state["xi_baseline"], rapm_for, rapm_against, feature_names, mapping, role_lookup, is_home=is_home_flag
         )
         curF, curA, curD = score_lineup_components(
             st.session_state["xi_current"], rapm_for, rapm_against, feature_names, mapping, role_lookup, is_home=is_home_flag
         )
-        dF = curF - baseF
-        dA = curA - baseA
-        dD = curD - baseD
+        # deltas -> tanh -> delta-delta
+        dF = float(np.tanh(curF - baseF))
+        dA = float(np.tanh(curA - baseA))
+        dD = dF - dA
 
         def colored_delta_html(label: str, value: float, good_when: str) -> str:
             good = (value >= 0) if good_when == "higher" else (value <= 0)
@@ -974,32 +888,23 @@ with tab1:
                 clusters_df[[
                     "player_id","primary_grouped_pos","pos_cluster_id",
                     "pos_cluster_label","pos_cluster_name"
-                ]],
-                on="player_id", how="left"
+                ]], on="player_id", how="left"
             )
-        )
-
-                # Add demographics and filter by Age/Country (Lineup tab only)
-        base_cands = base_cands.merge(
+        ).merge(
             players_meta[["player_id","age","country","country_flag","country_label"]],
             on="player_id", how="left"
         )
-        base_cands = base_cands[
-            base_cands["age"].between(sel_age[0], sel_age[1], inclusive="both", na=False)
-            & (base_cands["country"].isin(sel_countries))
-        ]
 
+        _age_mask_base = base_cands["age"].between(sel_age[0], sel_age[1], inclusive="both").fillna(False)
+        base_cands = base_cands[_age_mask_base & base_cands["country"].isin(sel_countries)]
 
-        # Normalized grouped versions
         base_cands["primary_pos_grouped_norm"]   = base_cands["primary_pos"].map(_to_grouped)
         base_cands["secondary_pos_grouped_norm"] = base_cands["secondary_pos"].map(_to_grouped)
         base_cands["third_pos_grouped_norm"]     = base_cands["third_pos"].map(_to_grouped)
 
-        # Team filter
         if sel_team != "(All)":
             base_cands = base_cands[base_cands["latest_team"] == sel_team]
 
-        # Positions filter
         if sel_positions:
             if only_main_pos:
                 mask_pos = base_cands["primary_grouped_pos"].isin(sel_positions)
@@ -1012,7 +917,6 @@ with tab1:
                 )
             base_cands = base_cands[mask_pos]
 
-        # Cluster filter (use whatever exists)
         cluster_col = "pos_cluster_name" if (
             "pos_cluster_name" in base_cands.columns and base_cands["pos_cluster_name"].notna().any()
         ) else "pos_cluster_label"
@@ -1020,15 +924,12 @@ with tab1:
             base_cands[cluster_col] = base_cands[cluster_col].astype(str)
             base_cands = base_cands[base_cands[cluster_col].isin(sel_clusters)]
 
-        # Clean display fallback
         base_cands["pos_cluster_name"] = base_cands["pos_cluster_name"].fillna("—")
-
         known_players = set(map(int, mapping.get("players", [])))
         base_cands = base_cands[base_cands["player_id"].isin(known_players)].copy()
 
         def badge(team): return TEAM_BADGE.get(team, "⚪")
 
-        # compact two-column layout for swap controls
         cols = st.columns(2, vertical_alignment="top")
         col_idx = 0
 
@@ -1040,14 +941,11 @@ with tab1:
 
                 st.write(f"**{pname} (id {pid})** — {mpos}")
 
-                # Respect cross-position toggle
                 if (not allow_cross_pos) and (mpos in GROUPED_POSITIONS):
-                    # Restrict to the outgoing player's grouped slot
                     cand = base_cands[base_cands["primary_grouped_pos"] == mpos].copy()
                 else:
                     cand = base_cands.copy()
 
-                # remove self
                 cand = cand[cand["player_id"] != pid].copy()
 
                 if cand.empty:
@@ -1055,13 +953,13 @@ with tab1:
                 else:
                     cand["label"] = cand.apply(
                         lambda x: f"{badge(x['latest_team'])}  {x['player']} (id {int(x['player_id'])})  "
-                                f"[{x['primary_grouped_pos']} • {x.get('pos_cluster_name','—')}] — "
-                                f"main: {x['primary_pos']} | alt: {x['secondary_pos']}/{x['third_pos']}",
+                                  f"[{x['primary_grouped_pos']} • {x.get('pos_cluster_name','—')}] — "
+                                  f"main: {x['primary_pos']} | alt: {x['secondary_pos']}/{x['third_pos']}",
                         axis=1
                     )
 
                     sel = st.selectbox("Replacement", options=["(choose)"] + cand["label"].tolist(),
-                                    key=f"swap_sel_{pid}", label_visibility="collapsed")
+                                       key=f"swap_sel_{pid}", label_visibility="collapsed")
 
                     if sel != "(choose)":
                         in_pid = int(sel.split("(id")[1].split(")")[0])
@@ -1089,10 +987,18 @@ with tab1:
                                     "delta_deltaxg": DD
                                 })
                             res_df = pd.DataFrame(results)
-                            ranked = (pool.merge(res_df, on="player_id", how="left")
-                                        .merge(players_meta[["player_id","age","country_label"]], on="player_id", how="left")
+
+                            # ✅ Force tanh here too (safe if already tanh’d)
+                            res_df["delta_xg_for"] = np.tanh(res_df["delta_xg_for"].astype(float))
+                            res_df["delta_xg_against"] = np.tanh(res_df["delta_xg_against"].astype(float))
+                            res_df["delta_deltaxg"] = res_df["delta_xg_for"] - res_df["delta_xg_against"]
+
+                            ranked = (pool.merge(res_df, on=["player_id"], how="left")
+                                        .merge(players_meta[["player_id","age","country_label"]],
+                                            on=["player_id","age","country_label"], how="left")
                                         .sort_values(["delta_deltaxg","delta_xg_for"], ascending=[False, False])
                                         .reset_index(drop=True))
+
                             st.dataframe(
                                 ranked[["player_id","player","latest_team","age","country_label",
                                         "primary_pos","secondary_pos","third_pos",
@@ -1104,43 +1010,31 @@ with tab1:
 
             col_idx = 1 - col_idx  # alternate columns
 
-
     # =========================
-    # Horizontal totals bars (Baseline, Current, Δ) with auto axis + table of changes
+    # Horizontal totals bars & changes table
     # =========================
     def build_totals_bars(title: str, base_val: float, cur_val: float, good_when: str):
         delta = cur_val - base_val
         good = (delta >= 0) if good_when == "higher" else (delta <= 0)
         bar_delta_color = "#0a7e22" if good else "#b00020"
-
         xs = [base_val, cur_val, delta]
-        # auto axis padding around data range
         m = max(abs(base_val), abs(cur_val), abs(delta), 0.1)
         pad = 0.15 * m + 0.05
         xmin, xmax = min(0.0, min(xs) - pad), max(0.0, max(xs) + pad)
-
         fig = go.Figure()
-        fig.add_trace(go.Bar(
-            y=["Baseline"], x=[base_val], orientation="h",
-            marker=dict(color="rgba(160,165,175,0.9)", line=dict(color="rgba(80,80,80,0.6)", width=1.5)),
-            text=[f"{base_val:.2f}"], textposition="outside", cliponaxis=False, name="Baseline"
-        ))
-        fig.add_trace(go.Bar(
-            y=["Current"], x=[cur_val], orientation="h",
-            marker=dict(color="rgba(98,122,255,0.85)", line=dict(color="rgba(70,70,150,0.6)", width=1.5)),
-            text=[f"{cur_val:.2f}"], textposition="outside", cliponaxis=False, name="Current"
-        ))
-        fig.add_trace(go.Bar(
-            y=["Δ"], x=[delta], orientation="h",
-            marker=dict(color=bar_delta_color), text=[f"{delta:+.2f}"],
-            textposition="outside", cliponaxis=False, name="Δ"
-        ))
-
-        fig.update_layout(
-            title=title, barmode="stack", showlegend=False,
-            margin=dict(l=10, r=10, t=46, b=10), height=200,
-            bargap=0.45
-        )
+        fig.add_trace(go.Bar(y=["Baseline"], x=[base_val], orientation="h",
+                             marker=dict(color="rgba(160,165,175,0.9)",
+                                         line=dict(color="rgba(80,80,80,0.6)", width=1.5)),
+                             text=[f"{base_val:.2f}"], textposition="outside", cliponaxis=False, name="Baseline"))
+        fig.add_trace(go.Bar(y=["Current"], x=[cur_val], orientation="h",
+                             marker=dict(color="rgba(98,122,255,0.85)",
+                                         line=dict(color="rgba(70,70,150,0.6)", width=1.5)),
+                             text=[f"{cur_val:.2f}"], textposition="outside", cliponaxis=False, name="Current"))
+        fig.add_trace(go.Bar(y=["Δ"], x=[delta], orientation="h",
+                             marker=dict(color=bar_delta_color), text=[f"{delta:+.2f}"],
+                             textposition="outside", cliponaxis=False, name="Δ"))
+        fig.update_layout(title=title, barmode="stack", showlegend=False,
+                          margin=dict(l=10, r=10, t=46, b=10), height=200, bargap=0.45)
         fig.update_xaxes(range=[xmin, xmax], zeroline=True, zerolinewidth=1, zerolinecolor="rgba(120,120,120,0.6)")
         fig.update_yaxes(showgrid=False)
         return fig
@@ -1148,10 +1042,9 @@ with tab1:
     st.divider()
     st.markdown("### Changes vs Baseline XI")
 
-    # Changes table (per swap vs baseline)
     changes_df = baseline_deltas(list(st.session_state["xi_baseline"]), list(st.session_state["xi_current"]))
 
-    # Totals (already computed above for banner)
+    # Totals bars use raw base/current components (unchanged)
     fig_tot_for = build_totals_bars("xG For (higher is better)", baseF, curF, good_when="higher")
     fig_tot_against = build_totals_bars("xG Against (lower is better)", baseA, curA, good_when="lower")
     fig_tot_dxg = build_totals_bars("ΔxG (higher is better)", baseD, curD, good_when="higher")
@@ -1170,7 +1063,7 @@ with tab1:
             players_meta[["player_id","age","country_label"]], left_on="in_pid", right_on="player_id", how="left"
         )
         st.dataframe(
-            changes_df.rename(columns={"in_pid":"player_id","in_name":"player","in_team":"team"})[
+            changes_df.rename(columns={"in_name":"player","in_team":"team"})[
                 ["player_id","player","team","age","country_label","delta_xg_for","delta_xg_against","delta_deltaxg"]
             ],
             height=280
@@ -1178,14 +1071,127 @@ with tab1:
     else:
         st.caption("No changes yet — make a swap to see the table.")
 
-
 with tab2:
     st.title("Player Comparison Tool")
+    # --- Heatmap helpers (parse StatsBomb 'location' -> x,y; normalize; optional trim) ---
+    import ast
+    from pathlib import Path
 
-    # Build roster pool once
+    HEATMAP_DIR = Path("./artifacts/heatmap_points")
+
+    def _parse_loc_to_xy(s):
+        """location is either NaN or a string like '[x, y]'. Returns (x,y) or (nan,nan)."""
+        try:
+            if pd.isna(s):
+                return np.nan, np.nan
+            if isinstance(s, (list, tuple)) and len(s) >= 2:
+                return float(s[0]), float(s[1])
+            if isinstance(s, str) and s.startswith("["):
+                x, y = ast.literal_eval(s)
+                return float(x), float(y)
+        except Exception:
+            pass
+        return np.nan, np.nan
+
+    def _xy_from_events(events_df: pd.DataFrame, pid: int, q_trim: float | None = 0.05):
+        """Fallback: build XY from events_min if parquet not found."""
+        if "player_id" not in events_df.columns or "location" not in events_df.columns:
+            return np.array([]), np.array([])
+        d = events_df.loc[events_df["player_id"] == int(pid), ["location"]].copy()
+        if d.empty:
+            return np.array([]), np.array([])
+        xy = d["location"].map(_parse_loc_to_xy)
+        d["x"] = [t[0] for t in xy]
+        d["y"] = [t[1] for t in xy]
+        d = d.dropna(subset=["x", "y"])
+        if d.empty:
+            return np.array([]), np.array([])
+
+        # scale 0–100 to 120x80 if needed
+        if (d["x"].max() <= 101) and (d["y"].max() <= 101):
+            d["x"] = d["x"] * 1.2
+            d["y"] = d["y"] * 0.8
+
+        # optional central trim
+        if q_trim is not None and 0.0 < q_trim < 0.5:
+            x_lo, x_hi = d["x"].quantile(q_trim), d["x"].quantile(1 - q_trim)
+            y_lo, y_hi = d["y"].quantile(q_trim), d["y"].quantile(1 - q_trim)
+            d = d[d["x"].between(x_lo, x_hi) & d["y"].between(y_lo, y_hi)]
+        return d["x"].to_numpy(), d["y"].to_numpy()
+
+    @st.cache_data(show_spinner=False)
+    def _load_xy_from_points(pid: int) -> tuple[np.ndarray, np.ndarray]:
+        """Load x,y from ./artifacts/heatmap_points/points_{pid}.parquet (if exists)."""
+        p = HEATMAP_DIR / f"points_{int(pid)}.parquet"
+        if not p.exists():
+            return np.array([]), np.array([])
+        try:
+            g = pd.read_parquet(p)
+            # Accept either explicit x/y columns or 'location' list-in-string
+            if {"x", "y"}.issubset(g.columns):
+                g = g.dropna(subset=["x", "y"]).copy()
+            elif "location" in g.columns:
+                xy = g["location"].map(_parse_loc_to_xy)
+                g["x"] = [t[0] for t in xy]
+                g["y"] = [t[1] for t in xy]
+                g = g.dropna(subset=["x", "y"]).copy()
+            else:
+                return np.array([]), np.array([])
+
+            # scale 0–100 to 120x80 if needed
+            if (g["x"].max() <= 101) and (g["y"].max() <= 101):
+                g["x"] = g["x"] * 1.2
+                g["y"] = g["y"] * 0.8
+
+            return g["x"].to_numpy(), g["y"].to_numpy()
+        except Exception:
+            return np.array([]), np.array([])
+
+    def _xy_for_player(pid: int, q_trim: float | None = 0.05):
+        """Prefer saved parquet points; fallback to parsing events_min."""
+        x, y = _load_xy_from_points(int(pid))
+        if x.size > 0 and y.size > 0:
+            if q_trim is not None and 0.0 < q_trim < 0.5:
+                x_lo, x_hi = np.quantile(x, q_trim), np.quantile(x, 1 - q_trim)
+                y_lo, y_hi = np.quantile(y, q_trim), np.quantile(y, 1 - q_trim)
+                keep = (x >= x_lo) & (x <= x_hi) & (y >= y_lo) & (y <= y_hi)
+                x, y = x[keep], y[keep]
+            return x, y
+        # fallback
+        return _xy_from_events(events_min, pid, q_trim=q_trim)
+
+    # --------- Age/Country filters for comparison pool ----------
+    _ages_cmp = players_meta["age"].dropna().astype(int)
+    if _ages_cmp.empty:
+        age_min_cmp, age_max_cmp = 15, 45
+    else:
+        age_min_cmp, age_max_cmp = int(_ages_cmp.min()), int(_ages_cmp.max())
+    sel_age_cmp = st.slider("Age range (Comparison tab):",
+                            min_value=age_min_cmp, max_value=age_max_cmp,
+                            value=(age_min_cmp, age_max_cmp), step=1)
+
+    _countries_cmp = (players_meta[["country","country_flag"]]
+                        .dropna()
+                        .drop_duplicates()
+                        .assign(label=lambda d: d["country_flag"] + " " + d["country"])
+                        .sort_values("country", kind="stable"))
+    country_labels_cmp = _countries_cmp["label"].tolist()
+    _label2country_cmp = {lbl: c for lbl, c in zip(_countries_cmp["label"], _countries_cmp["country"])}
+    sel_countries_lbl_cmp = st.multiselect("Countries (Comparison tab):",
+                                           options=country_labels_cmp,
+                                           default=country_labels_cmp)
+    sel_countries_cmp = { _label2country_cmp[lbl] for lbl in sel_countries_lbl_cmp }
+
+    # --------- Build roster pool ----------
     roster = _merge_roster_for_compare(rw_profiles, players_meta, clusters_df)
+    roster = roster.merge(
+        players_meta[["player_id","age","country","country_flag","country_label"]],
+        on="player_id", how="left"
+    )
+    _age_mask_cmp = roster["age"].between(sel_age_cmp[0], sel_age_cmp[1], inclusive="both").fillna(False)
+    roster = roster[_age_mask_cmp & roster["country"].isin(sel_countries_cmp)].reset_index(drop=True)
     per90_cols_rw = _detect_per90_rw_cols(roster)
-    # default radar bundle (you can tailor per position later)
+
     default_stats = [
         "xg_per90_rw", "xA_per90_rw", "shots_per90_rw",
         "key_passes_per90_rw", "passes_cmp_per90_rw", "passes_att_per90_rw",
@@ -1203,12 +1209,11 @@ with tab2:
         if "player_id" not in pool.columns or pool.empty:
             return fallback_index
         try:
-            idx = pool.index[pool["player_id"].astype(int) == int(desired_pid)]
-            if len(idx) > 0:
-                # convert absolute index to positional index within pool as listed in selectbox
-                pos = pool.reset_index(drop=True).index[pool.reset_index(drop=True)["player_id"].astype(int) == int(desired_pid)]
-                if len(pos) > 0:
-                    return int(pos[0])
+            pos = pool.reset_index(drop=True).index[
+                pool.reset_index(drop=True)["player_id"].astype(int) == int(desired_pid)
+            ]
+            if len(pos) > 0:
+                return int(pos[0])
         except Exception:
             pass
         return min(fallback_index, len(pool) - 1) if len(pool) else 0
@@ -1238,7 +1243,6 @@ with tab2:
         selA = st.selectbox("Choose Player A", labelA.tolist(), index=idxA, key="cmp_player_A")
         pidA = int(selA.split("(id")[1].split(")")[0])
 
-
     # ---- Player B ----
     with cB:
         st.markdown("#### Player B")
@@ -1260,10 +1264,6 @@ with tab2:
         idxB = _default_index_for_pid(poolB, DEFAULT_PID_B, fallback_index=min(1, max(0, len(labelB)-1)))
         selB = st.selectbox("Choose Player B", labelB.tolist(), index=idxB, key="cmp_player_B")
         pidB = int(selB.split("(id")[1].split(")")[0])
-
-
-        # Desired defaults
-
 
     # ---- Radar + percentile bars
     st.markdown("---")
@@ -1289,15 +1289,60 @@ with tab2:
             st.plotly_chart(_percentile_bar(roster, pidB, stat_cols, "Percentiles — Player B"),
                             use_container_width=True, config={"responsive": True})
 
+        # --- Heatmaps for Player A & Player B (below percentiles) ---
+        st.markdown("---")
+        st.markdown("#### Heatmaps (event density)")
+
+        if not MPLSOCCER_OK:
+            st.info("Install `mplsoccer` to see heatmaps:  pip install mplsoccer")
+        else:
+            from mplsoccer import VerticalPitch
+            hA, hB = st.columns(2, gap="large")
+
+            # Optional control: how aggressively to trim fringes
+            trim = st.slider("Trim fringes (central % kept):", min_value=60, max_value=98, value=90, step=2,
+                             help="Keeps only the central band of points before KDE (by x/y quantiles).")
+            q_trim = (100 - trim) / 200.0  # e.g., 90% -> 0.05
+
+            # --- Player A ---
+            with hA:
+                xA, yA = _xy_for_player(pidA, q_trim=q_trim)
+                if len(xA) == 0:
+                    st.warning("No event locations for Player A.")
+                else:
+                    pitch = VerticalPitch(pitch_type="statsbomb", pitch_color="white", line_color="#c7c7c7",
+                                          pad_bottom=2, pad_top=2, pad_left=2, pad_right=2)
+                    figA, axA = pitch.draw(figsize=(5.8, 9.0), tight_layout=True)
+                    pitch.kdeplot(xA, yA, ax=axA, fill=True, levels=40, thresh=0.03,
+                                  cmap="RdYlGn_r", alpha=0.78)
+                    pitch.scatter(xA, yA, s=6, alpha=0.10, color="#6b4e16", ax=axA, zorder=3)
+                    axA.set_title(f"Heatmap — {pidA} (n={len(xA)})", fontsize=12)
+                    st.pyplot(figA)
+
+            # --- Player B ---
+            with hB:
+                xB, yB = _xy_for_player(pidB, q_trim=q_trim)
+                if len(xB) == 0:
+                    st.warning("No event locations for Player B.")
+                else:
+                    pitch = VerticalPitch(pitch_type="statsbomb", pitch_color="white", line_color="#c7c7c7",
+                                          pad_bottom=2, pad_top=2, pad_left=2, pad_right=2)
+                    figB, axB = pitch.draw(figsize=(5.8, 9.0), tight_layout=True)
+                    pitch.kdeplot(xB, yB, ax=axB, fill=True, levels=40, thresh=0.03,
+                                  cmap="RdYlGn_r", alpha=0.78)
+                    pitch.scatter(xB, yB, s=6, alpha=0.10, color="#6b4e16", ax=axB, zorder=3)
+                    axB.set_title(f"Heatmap — {pidB} (n={len(xB)})", fontsize=12)
+                    st.pyplot(figB)
+
         # Raw values table for the two players (for reference)
         cols_show = ["player_id","player","latest_team","age","country_label",
                      "primary_grouped_pos","pos_cluster_name"] + stat_cols
-        tbl = (roster.merge(players_meta[["player_id","age","country_label"]], on="player_id", how="left")
-                     [roster["player_id"].isin([pidA, pidB])])
+        tbl = roster[roster["player_id"].isin([pidA, pidB])].merge(
+            players_meta[["player_id","age","country_label"]], on=["player_id","age","country_label"], how="left"
+        )
         tbl = tbl[cols_show].reset_index(drop=True)
         st.dataframe(tbl, height=220)
 
-    
 with tab3:
     st.header("Network Effects — Counterfactual Transfer Impact")
 
@@ -1328,7 +1373,10 @@ with tab3:
 
         # Season selector (from team_style seasons)
         if "season" in team_style.columns:
-            seasons_sorted = sorted(team_style["season"].dropna().unique(), key=lambda s: int(str(s).split("/")[0]))
+            seasons_sorted = sorted(
+                team_style["season"].dropna().unique(),
+                key=lambda s: int(str(s).split("/")[0])
+            )
             season_sel = st.selectbox("Season:", seasons_sorted, index=max(0, len(seasons_sorted)-1))
         else:
             season_sel = str(datetime.now().year)
@@ -1337,7 +1385,7 @@ with tab3:
         @st.cache_data(show_spinner=False)
         def _latest_xi_for_team(events_df: pd.DataFrame, team_name: str):
             try:
-                ids, mid = get_last_starting_xi_ids(events_df, team_name=team_name)
+                ids, _ = get_last_starting_xi_ids(events_df, team_name=team_name)
                 return ids
             except Exception:
                 return []
@@ -1345,16 +1393,23 @@ with tab3:
         xi_dst_default = _latest_xi_for_team(events_min, dst_team)
         if not xi_dst_default:
             st.warning(f"No XI found for {dst_team}. You can still run a counterfactual without teammate deltas.")
+
         # Editable target XI text (independent state from lineup tab)
         def _on_xi_dst_change():
             st.session_state["xi_dst_current"] = _parse_xi_text_to_list(st.session_state["xi_dst_text"])
+
         if "xi_dst_current" not in st.session_state:
             st.session_state["xi_dst_current"] = list(xi_dst_default)
-        xi_dst_text_default = ",".join(map(str, st.session_state["xi_dst_current"])) if st.session_state.get("xi_dst_current") else ",".join(map(str, xi_dst_default))
-        st.text_input("Target XI (comma-separated ids)", value=xi_dst_text_default, key="xi_dst_text", on_change=_on_xi_dst_change)
+        xi_dst_text_default = (
+            ",".join(map(str, st.session_state["xi_dst_current"]))
+            if st.session_state.get("xi_dst_current")
+            else ",".join(map(str, xi_dst_default))
+        )
+        st.text_input("Target XI (comma-separated ids)", value=xi_dst_text_default,
+                      key="xi_dst_text", on_change=_on_xi_dst_change)
         xi_dst = list(st.session_state.get("xi_dst_current", xi_dst_default))
 
-                # (inside with tab3, after xi_dst is built)
+        # Target XI preview
         pL, pR = st.columns([1.1, 1.0])
         with pL:
             st.markdown("#### Target XI (destination)")
@@ -1363,26 +1418,49 @@ with tab3:
         with pR:
             st.empty()  # reserved for future mini charts
 
-
         # Optional: who leaves (match-style swap; may be None)
         out_pid_opt = None
         if xi_dst:
-            # prettify
-            _names = players_meta.set_index("player") if "player" in players_meta.columns else None
             pool_out = (pd.DataFrame({"player_id": xi_dst})
                         .merge(players_meta[["player_id","player"]], on="player_id", how="left"))
-            out_opts = ["(None)"] + [f"{row['player']} (id {int(row['player_id'])})" for _, row in pool_out.iterrows()]
+            out_opts = ["(None)"] + [
+                f"{row['player']} (id {int(row['player_id'])})" for _, row in pool_out.iterrows()
+            ]
             out_sel = st.selectbox("Outgoing player (optional):", out_opts, index=0)
             if out_sel != "(None)":
                 out_pid_opt = int(out_sel.split("(id")[1].split(")")[0])
 
         st.caption("Tip: Outgoing player helps adjust the team's role-mix more realistically.")
 
-    # ---- Pick incoming player & filters (same global style as Lineup) ----
+    # ---- Incoming player & filters ----
     with cR:
         st.subheader("Incoming player & filters")
 
-        # Global filters (reuse your sidebar semantics here but scoped to this tab)
+        # --- Demographic filters (tab-specific) ---
+        _ages_net = players_meta["age"].dropna().astype(int)
+        if _ages_net.empty:
+            age_min_net, age_max_net = 15, 45
+        else:
+            age_min_net, age_max_net = int(_ages_net.min()), int(_ages_net.max())
+        sel_age_net = st.slider("Age range (Network tab):",
+                                min_value=age_min_net, max_value=age_max_net,
+                                value=(age_min_net, age_max_net), step=1)
+
+        _countries_net = (
+            players_meta[["country","country_flag"]]
+            .dropna()
+            .drop_duplicates()
+            .assign(label=lambda d: d["country_flag"] + " " + d["country"])
+            .sort_values("country", kind="stable")
+        )
+        country_labels_net = _countries_net["label"].tolist()
+        _label2country_net = {lbl: c for lbl, c in zip(_countries_net["label"], _countries_net["country"])}
+        sel_countries_lbl_net = st.multiselect("Countries (Network tab):",
+                                               options=country_labels_net,
+                                               default=country_labels_net)
+        sel_countries_net = {_label2country_net[lbl] for lbl in sel_countries_lbl_net}
+
+        # Existing global filters
         g1, g2 = st.columns(2)
         with g1:
             latest_team_filter = ["(All)"] + _sorted
@@ -1396,19 +1474,34 @@ with tab3:
             clusters_df["pos_cluster_name"].dropna().unique().tolist()
             if "pos_cluster_name" in clusters_df.columns else []
         )
-        sel_cluster_net = st.selectbox("Filter by cluster (optional):", ["(All)"] + cluster_names_all, index=0, key="net_sel_cluster")
+        sel_cluster_net = st.selectbox("Filter by cluster (optional):",
+                                       ["(All)"] + cluster_names_all, index=0, key="net_sel_cluster")
 
-        # Build candidate pool (same schema as Lineup)
-        base_cands_net = (players_meta[["player_id","player","latest_team","primary_pos","secondary_pos","third_pos"]]
-            .merge(clusters_df[["player_id","primary_grouped_pos","pos_cluster_id","pos_cluster_label","pos_cluster_name"]],
-                   on="player_id", how="left"))
+        # Build candidate pool
+        base_cands_net = (
+            players_meta[["player_id","player","latest_team","primary_pos","secondary_pos","third_pos"]]
+            .merge(
+                clusters_df[["player_id","primary_grouped_pos","pos_cluster_id","pos_cluster_label","pos_cluster_name"]],
+                on="player_id", how="left"
+            )
+        )
+
+        # Keep only modeled players
         known_players = set(map(int, mapping.get("players", [])))
         base_cands_net = base_cands_net[base_cands_net["player_id"].isin(known_players)].copy()
 
+        # Attach demographics and apply age/country filters
+        base_cands_net = base_cands_net.merge(
+            players_meta[["player_id","age","country","country_flag","country_label"]],
+            on="player_id", how="left"
+        )
+        _age_mask_net = base_cands_net["age"].between(sel_age_net[0], sel_age_net[1], inclusive="both").fillna(False)
+        base_cands_net = base_cands_net[_age_mask_net & base_cands_net["country"].isin(sel_countries_net)]
+
+        # Team / position / cluster filters
         if sel_team_net != "(All)":
             base_cands_net = base_cands_net[base_cands_net["latest_team"] == sel_team_net]
         if sel_pos_net != "(All)":
-            # include if primary/secondary/third matches OR its grouped primary matches
             mask = (
                 (base_cands_net["primary_grouped_pos"] == sel_pos_net) |
                 (base_cands_net["primary_pos"] == sel_pos_net) |
@@ -1429,21 +1522,24 @@ with tab3:
                           f"[{x.get('primary_grouped_pos','?')} • {x.get('pos_cluster_name','—')}] — "
                           f"main: {x['primary_pos']} | alt: {x['secondary_pos']}/{x['third_pos']}", axis=1
             )
-            sel_in = st.selectbox("Incoming player:", ["(choose)"] + base_cands_net["label"].tolist(), index=0, key="net_in_player")
+            sel_in = st.selectbox("Incoming player:", ["(choose)"] + base_cands_net["label"].tolist(),
+                                  index=0, key="net_in_player")
             in_pid = None if sel_in == "(choose)" else int(sel_in.split("(id")[1].split(")")[0])
 
         # Choose stats to display
         default_stats_show = [c for c in network_target_cols if c in (
-            "xg_per90", "xA_per90", "key_passes_per90", "passes_att_per90", "passes_cmp_per90", "obv_total_per90"
+            "xg_per90", "xA_per90", "key_passes_per90", "passes_att_per90",
+            "passes_cmp_per90", "obv_total_per90"
         )]
-        stats_show = st.multiselect("Stats to display:", network_target_cols, default=default_stats_show, key="net_stats_show")
+        stats_show = st.multiselect("Stats to display:", network_target_cols,
+                                    default=default_stats_show, key="net_stats_show")
 
         run_btn = st.button("Run counterfactual", type="primary", disabled=(in_pid is None))
 
     st.markdown("---")
 
     if run_btn and (in_pid is not None):
-        # Run bundle (uses your new network_effects.py)
+        # Run bundle (uses your network_effects.py)
         bundle = predict_transfer_bundle(
             player_id=in_pid,
             to_team=dst_team,
@@ -1532,8 +1628,7 @@ with tab3:
                               delta_color="normal")
 
         # -------------------------
-        # Current vs Predicted table
-        # (per-90 + percentiles computed like module)
+        # Current vs Predicted table (per-90 + percentiles)
         # -------------------------
         st.markdown("#### Current vs Predicted — per-90 & percentiles (0–100)")
 
@@ -1543,7 +1638,7 @@ with tab3:
 
         grouped_pos = _pos_for_bundle_ctx()
 
-        # Compute CURRENT percentiles the same way the module does for predicted
+        # Compute CURRENT percentiles with same method as the module
         curr_pct = {}
         for s in stats_show:
             curr_pct[s] = _percentile_from_rw_dist(curr_per90.get(s, np.nan), grouped_pos, s)
@@ -1596,11 +1691,9 @@ with tab3:
                     summary.append({"stat": s, "Δ per90 (all teammates)": np.nan})
                     continue
                 if vec.nunique(dropna=True) == 1 or (vec.max() - vec.min()) < 1e-9:
-                    # truly uniform
-                    v = float(vec.iloc[0])
+                    v = float(vec.iloc[0])   # truly uniform
                 else:
-                    # not exactly uniform: use mean so you still get a single-row view
-                    v = float(vec.mean())
+                    v = float(vec.mean())    # not uniform: show mean
                 summary.append({"stat": s, "Δ per90 (all teammates)": v})
 
             df_sum = pd.DataFrame(summary)
@@ -1610,12 +1703,17 @@ with tab3:
             st.dataframe(sty, use_container_width=True, height=120)
 
             with st.expander("Show full per-teammate before/after/delta table"):
+                # Build columns list based on chosen stats
                 keep_cols = ["player_id"]
                 for s in stats_show:
                     keep_cols += [f"before_{s}", f"after_{s}", f"delta_{s}"]
+                keep_cols = [c for c in keep_cols if c in team_imp.columns]
+
+                demo_cols = ["player_id","player","latest_team","age","country_label"]
+                demo_cols = [c for c in demo_cols if c in players_meta.columns]
+
                 show = (team_imp[keep_cols]
-                        .merge(players_meta[["player_id","player","latest_team","age","country_label"]],
-                               on="player_id", how="left"))
+                        .merge(players_meta[demo_cols], on="player_id", how="left"))
 
                 # color only the delta_* columns
                 delta_cols = [c for c in show.columns if c.startswith("delta_")]
@@ -1627,4 +1725,4 @@ with tab3:
                 st.dataframe(show.style.apply(_apply_rowstyle, axis=None),
                              use_container_width=True, height=420)
 
-        st.caption(f"Impact change is not supported for players within the same cluster.")
+        st.caption("Impact change is not supported for players within the same cluster.")
