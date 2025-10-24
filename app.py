@@ -622,19 +622,28 @@ with tab1:
                 pass
         return out
 
-    def _on_xi_text_change():
-        st.session_state["xi_current"] = _parse_xi_text_to_list(st.session_state["xi_text"])
+    # --- XI text input (NO value= to avoid warning) ---
 
+    # If you still use the "_xi_text_pending" sync, apply it BEFORE the widget
     if "_xi_text_pending" in st.session_state:
         st.session_state["xi_text"] = st.session_state.pop("_xi_text_pending")
 
-    xi_text_default = st.session_state.get("xi_text", ",".join(map(str, st.session_state["xi_current"])))
+    # Ensure the key exists once (first run or after reset/switch team)
+    if "xi_text" not in st.session_state:
+        st.session_state["xi_text"] = ",".join(map(str, st.session_state["xi_current"]))
+
+    def _on_xi_text_change():
+        # Only updates the active XI (not baseline)
+        st.session_state["xi_current"] = _parse_xi_text_to_list(st.session_state["xi_text"])
+
+    # IMPORTANT: do NOT pass value=... here
     st.text_input(
         "Edit XI (comma-separated player_ids) — edits active lineup only",
-        value=xi_text_default,
         key="xi_text",
         on_change=_on_xi_text_change
     )
+
+    # Now you can read these safely
     xi = list(st.session_state["xi_current"])
     xi_baseline = list(st.session_state["xi_baseline"])
 
