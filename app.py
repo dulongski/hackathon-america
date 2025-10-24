@@ -12,6 +12,7 @@ import pickle
 import numpy as np
 import pandas as pd
 import streamlit as st
+st.set_option("client.showErrorDetails", False)  # do this before anything else
 from sklearn.pipeline import Pipeline
 
 # Pitch (optional)
@@ -504,7 +505,7 @@ with tab1:
     label_to_team = {lbl: t for lbl, t in zip(team_labels, _sorted)}
 
     with st.sidebar:
-        st.image("america.png", use_column_width=True)
+        st.image("america.png", use_container_width=True)
         st.header("Team & Filters (only for Lineup tool)")
         default_idx = _sorted.index("América")
         sel_label = st.selectbox("Baseline team (latest XI):", options=team_labels, index=default_idx)
