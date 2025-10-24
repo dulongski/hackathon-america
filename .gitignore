@@ -1,5 +1,3 @@
 .venv
 *.csv
 /data/
-/artifacts/
-.env
