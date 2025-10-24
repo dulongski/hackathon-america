@@ -132,7 +132,12 @@ DUP_OFFSETS = {
 # Tabs: Lineup (existing) | Player Comparison (new)
 # ===========================================
 tab1, tab2, tab3 = st.tabs(["xG Impact", "Player Comparison", "Network Effects"])
-st.set_page_config(page_title="Player Scouting Tool", layout="wide")
+#st.set_page_config(page_title="Player Scouting Tool", layout="wide")
+st.set_page_config(
+    page_title="ISAC | América Scouting ",
+    page_icon="america.png",   # put america.png in the same folder as app.py (or give an absolute/relative path)
+    layout="wide"
+)
 
 with tab1:
     # =========================
@@ -499,6 +504,7 @@ with tab1:
     label_to_team = {lbl: t for lbl, t in zip(team_labels, _sorted)}
 
     with st.sidebar:
+        st.image("america.png", use_column_width=True)
         st.header("Team & Filters (only for Lineup tool)")
         default_idx = _sorted.index("América")
         sel_label = st.selectbox("Baseline team (latest XI):", options=team_labels, index=default_idx)
